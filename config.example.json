@@ -1,0 +1,45 @@
+{
+  "recorder": {
+    "path": "C:\\Program Files\\HiFormatRecorder\\HiFormatRecorder.exe",
+    "start_delay_seconds": 10,
+    "process_names": [
+      "HiFormatRecorder.exe"
+    ],
+    "launch_if_not_running": true,
+    "prepare_command": "mode:fullscreen",
+    "prepare_delay_seconds": 0,
+    "start_command": "hotkey:alt+1",
+    "stop_command": "hotkey:alt+2"
+  },
+  "tencent_meeting": {
+    "leave_command": null,
+    "close_command": null,
+    "process_names": [
+      "wemeetapp.exe",
+      "TencentMeeting.exe"
+    ],
+    "window_title_keywords": [
+      "腾讯会议",
+      "Tencent Meeting",
+      "VooV Meeting"
+    ],
+    "open_delay_seconds": 8,
+    "focus_after_join": true
+  },
+  "defaults": {
+    "join_early_minutes": 1,
+    "recording_tail_minutes": 1,
+    "max_late_start_minutes": 10
+  },
+  "tasks": [
+    {
+      "id": "demo-20260510",
+      "title": "自动会议录制测试",
+      "meeting_code": "123456789",
+      "meeting_url": "wemeet://page/inmeeting?meeting_code=123456789",
+      "start_time": "2026-05-10 09:00",
+      "end_time": "2026-05-10 11:00",
+      "enabled": true
+    }
+  ]
+}
