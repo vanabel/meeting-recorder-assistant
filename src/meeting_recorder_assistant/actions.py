@@ -8,10 +8,14 @@ import time
 import webbrowser
 from ctypes import byref, wintypes, windll
 from pathlib import Path
+from typing import Any
 
 from .models import AppConfig, MeetingTask
 
 LOGGER = logging.getLogger(__name__)
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+STARTF_USESHOWWINDOW = getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+SW_HIDE = 0
 
 
 class ActionError(RuntimeError):
@@ -29,6 +33,32 @@ def is_running_as_admin() -> bool:
         return bool(windll.shell32.IsUserAnAdmin())
     except OSError:
         return False
+
+
+def _windows_subprocess_kwargs() -> dict[str, Any]:
+    if sys.platform != "win32":
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = SW_HIDE
+    return {
+        "creationflags": CREATE_NO_WINDOW,
+        "startupinfo": startupinfo,
+    }
+
+
+def _powershell_command_args(command: str) -> list[str]:
+    return [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        command,
+    ]
 
 
 def ensure_recorder_running(config: AppConfig, dry_run: bool) -> None:
@@ -166,7 +196,12 @@ def _run_shell_command(command: str, dry_run: bool) -> None:
     if dry_run:
         return
 
-    completed = subprocess.run(command, check=False, shell=True)
+    completed = subprocess.run(
+        command,
+        check=False,
+        shell=True,
+        **_windows_subprocess_kwargs(),
+    )
     if completed.returncode != 0:
         raise ActionError(f"Command failed with exit code {completed.returncode}: {command}")
 
@@ -197,7 +232,7 @@ def _run_recorder_command(config: AppConfig, command: str, dry_run: bool) -> Non
 
 def _launch_executable(path: Path) -> None:
     try:
-        subprocess.Popen([str(path)])
+        subprocess.Popen([str(path)], **_windows_subprocess_kwargs())
     except OSError as exc:
         if sys.platform == "win32" and getattr(exc, "winerror", None) == 740:
             if is_running_as_admin():
@@ -225,10 +260,11 @@ def _recorder_is_running(config: AppConfig) -> bool:
             "}; exit 1"
         )
         completed = subprocess.run(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+            _powershell_command_args(command),
             check=False,
             capture_output=True,
             text=True,
+            **_windows_subprocess_kwargs(),
         )
         return completed.returncode == 0
 
@@ -300,10 +336,11 @@ def _recorder_window_handle(config: AppConfig) -> int | None:
         "}; exit 1"
     )
     completed = subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        _powershell_command_args(command),
         check=False,
         capture_output=True,
         text=True,
+        **_windows_subprocess_kwargs(),
     )
     if completed.returncode != 0:
         return None
@@ -329,7 +366,7 @@ def _force_foreground_window(hwnd: int) -> bool:
     user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)
     result = bool(user32.SetForegroundWindow(hwnd))
     if not result:
-        shell32.ShellExecuteW(None, None, "cmd.exe", "/c exit", None, 0)
+        shell32.ShellExecuteW(None, "open", "cmd.exe", "/c exit", None, 0)
         time.sleep(0.1)
         result = bool(user32.SetForegroundWindow(hwnd))
     time.sleep(0.3)
@@ -352,10 +389,11 @@ def _foreground_belongs_to(config: AppConfig) -> bool:
 def _process_name_from_pid(pid: int) -> str | None:
     command = f"Get-Process -Id {pid} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ProcessName"
     completed = subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        _powershell_command_args(command),
         check=False,
         capture_output=True,
         text=True,
+        **_windows_subprocess_kwargs(),
     )
     if completed.returncode != 0:
         return None
@@ -420,10 +458,11 @@ def _click_recorder_text(config: AppConfig, text: str) -> None:
         "Start-Sleep -Milliseconds 500"
     )
     completed = subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        _powershell_command_args(command),
         check=False,
         capture_output=True,
         text=True,
+        **_windows_subprocess_kwargs(),
     )
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout).strip()
@@ -522,10 +561,11 @@ def _window_handle_by_title_keywords(title_keywords: tuple[str, ...]) -> int | N
 
 def _window_handle_from_powershell(command: str) -> int | None:
     completed = subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        _powershell_command_args(command),
         check=False,
         capture_output=True,
         text=True,
+        **_windows_subprocess_kwargs(),
     )
     if completed.returncode != 0:
         return None
