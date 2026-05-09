@@ -34,12 +34,13 @@ def run_task(
 ) -> None:
     LOGGER.info("Task %s started: %s", task.id, task.title)
     recording_started = False
+    recorder_was_ready = False
     _wait_until(task.recorder_start_time(config.defaults), dry_run, stop_event)
     if _should_stop(stop_event):
         LOGGER.info("Task %s cancelled before joining.", task.id)
         return
-    actions.ensure_recorder_running(config, dry_run=dry_run)
-    actions.prepare_recorder(config, dry_run=dry_run)
+    recorder_was_ready = actions.ensure_recorder_running(config, dry_run=dry_run)
+    actions.prepare_recorder(config, dry_run=dry_run, recorder_was_ready=recorder_was_ready)
     actions.start_recording(config, dry_run=dry_run)
     recording_started = True
     actions.join_meeting(config, task, dry_run=dry_run)
@@ -47,9 +48,9 @@ def run_task(
     if _should_stop(stop_event):
         LOGGER.info("Task %s stop requested.", task.id)
         if recording_started:
-            _run_stop_actions(config, dry_run)
+            _run_stop_actions(config, task, dry_run)
         return
-    _run_stop_actions(config, dry_run)
+    _run_stop_actions(config, task, dry_run)
     LOGGER.info("Task %s finished: %s", task.id, task.title)
 
 
@@ -127,10 +128,10 @@ def _should_stop(stop_event: Event | None) -> bool:
     return stop_event is not None and stop_event.is_set()
 
 
-def _run_stop_actions(config: AppConfig, dry_run: bool) -> None:
+def _run_stop_actions(config: AppConfig, task: MeetingTask, dry_run: bool) -> None:
     actions.stop_recorder(config, dry_run=dry_run)
-    actions.leave_tencent_meeting(config, dry_run=dry_run)
-    actions.close_tencent_meeting(config, dry_run=dry_run)
+    actions.leave_meeting_client(config, task, dry_run=dry_run)
+    actions.close_meeting_client(config, task, dry_run=dry_run)
 
 
 def _is_stale_for_watcher(config: AppConfig, task: MeetingTask, now: datetime) -> bool:

@@ -8,11 +8,13 @@ from typing import Any
 from .models import (
     AppConfig,
     DefaultsConfig,
+    MeetingClientConfig,
     MeetingTask,
     RecorderConfig,
-    TencentMeetingConfig,
     meeting_code_from_url,
+    meeting_platform_from_url,
     normalize_meeting_code,
+    normalize_meeting_platform,
 )
 
 
@@ -32,7 +34,8 @@ def load_config(path: Path) -> AppConfig:
         raise ConfigError("Config root must be a JSON object.")
 
     recorder = _load_recorder(raw.get("recorder"))
-    tencent_meeting = _load_tencent_meeting(raw.get("tencent_meeting", {}))
+    tencent_meeting = _load_meeting_client(raw.get("tencent_meeting", {}), "tencent_meeting")
+    zoom_meeting = _load_meeting_client(raw.get("zoom_meeting", {}), "zoom_meeting")
     defaults = _load_defaults(raw.get("defaults", {}))
     tasks = tuple(_load_task(item, defaults) for item in _require_list(raw, "tasks"))
     _validate_unique_task_ids(tasks)
@@ -40,6 +43,7 @@ def load_config(path: Path) -> AppConfig:
     return AppConfig(
         recorder=recorder,
         tencent_meeting=tencent_meeting,
+        zoom_meeting=zoom_meeting,
         defaults=defaults,
         tasks=tasks,
     )
@@ -60,10 +64,10 @@ def _load_recorder(raw: Any) -> RecorderConfig:
     )
 
 
-def _load_tencent_meeting(raw: Any) -> TencentMeetingConfig:
+def _load_meeting_client(raw: Any, field_name: str) -> MeetingClientConfig:
     if not isinstance(raw, dict):
-        raise ConfigError("tencent_meeting must be an object.")
-    return TencentMeetingConfig(
+        raise ConfigError(f"{field_name} must be an object.")
+    return MeetingClientConfig(
         close_command=_optional_str(raw, "close_command"),
         leave_command=_optional_str(raw, "leave_command"),
         process_names=tuple(_optional_str_list(raw, "process_names")),
@@ -94,6 +98,8 @@ def _load_task(raw: Any, defaults: DefaultsConfig) -> MeetingTask:
         meeting_url=_optional_str(raw, "meeting_url"),
         start_time=_parse_datetime(_require_str(raw, "start_time", "task")),
         end_time=_parse_datetime(_require_str(raw, "end_time", "task")),
+        meeting_platform=_optional_meeting_platform(raw),
+        meeting_password=_optional_meeting_password(raw),
         enabled=bool(raw.get("enabled", True)),
         join_early_minutes=_optional_int_or_none(raw, "join_early_minutes"),
         recording_tail_minutes=_optional_int_or_none(raw, "recording_tail_minutes"),
@@ -104,6 +110,17 @@ def _load_task(raw: Any, defaults: DefaultsConfig) -> MeetingTask:
 
     if not task.meeting_code and not task.meeting_url:
         raise ConfigError(f"Task {task.id!r} must include meeting_code or meeting_url.")
+    if task.meeting_password and task.meeting_platform != "zoom":
+        raise ConfigError(
+            f"Task {task.id!r} uses meeting_password, but meeting_platform is not 'zoom'."
+        )
+    if task.meeting_url:
+        url_platform = meeting_platform_from_url(task.meeting_url)
+        if url_platform and url_platform != task.meeting_platform:
+            raise ConfigError(
+                f"Task {task.id!r} meeting_platform {task.meeting_platform!r} does not match "
+                f"meeting_url platform {url_platform!r}."
+            )
     if task.meeting_code and task.meeting_url:
         url_code = meeting_code_from_url(task.meeting_url)
         if url_code and normalize_meeting_code(task.meeting_code) != url_code:
@@ -158,6 +175,32 @@ def _optional_str(raw: dict[str, Any], key: str) -> str | None:
         raise ConfigError(f"{key} must be a string or null.")
     value = value.strip()
     return value or None
+
+
+def _optional_meeting_platform(raw: dict[str, Any]) -> str:
+    value = raw.get("meeting_platform")
+    if value is None:
+        value = meeting_platform_from_url(_optional_str(raw, "meeting_url"))
+    if value is not None and not isinstance(value, str):
+        raise ConfigError("meeting_platform must be a string or null.")
+    try:
+        return normalize_meeting_platform(value, _optional_str(raw, "meeting_url"))
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
+
+
+def _optional_meeting_password(raw: dict[str, Any]) -> str | None:
+    if "meeting_password" in raw and "meeting_passcode" in raw:
+        password = _optional_str(raw, "meeting_password")
+        passcode = _optional_str(raw, "meeting_passcode")
+        if password and passcode and password != passcode:
+            raise ConfigError("meeting_password and meeting_passcode must match when both are set.")
+        return password or passcode
+    if "meeting_password" in raw:
+        return _optional_str(raw, "meeting_password")
+    if "meeting_passcode" in raw:
+        return _optional_str(raw, "meeting_passcode")
+    return None
 
 
 def _optional_int(raw: dict[str, Any], key: str, default: int) -> int:

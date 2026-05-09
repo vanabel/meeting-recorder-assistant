@@ -16,13 +16,15 @@ from typing import Any, Callable
 from .actions import ElevationRequiredError, is_running_as_admin
 from .config import ConfigError, load_config
 from .models import (
-    meeting_code_from_url,
-    meeting_url_from_code,
-    meeting_url_with_code,
+    DEFAULT_MEETING_PLATFORM,
+    SUPPORTED_MEETING_PLATFORMS,
+    build_join_url,
+    meeting_platform_from_url,
     normalize_meeting_code,
+    normalize_meeting_platform,
 )
 from .runtime import app_root, default_config_path, ensure_log_dir, gui_restart_command, is_frozen_app
-from .scheduler import enabled_tasks, next_pending_task, run_task, watch
+from .scheduler import next_pending_task, run_task, watch
 
 LOGGER = logging.getLogger(__name__)
 APP_ROOT = app_root()
@@ -61,6 +63,7 @@ class MeetingRecorderApp:
         self.dry_run = tk.BooleanVar(value=False)
         self.launch_if_not_running = tk.BooleanVar(value=True)
         self.focus_after_join = tk.BooleanVar(value=True)
+        self.zoom_focus_after_join = tk.BooleanVar(value=True)
         self.enabled = tk.BooleanVar(value=True)
         self.status = tk.StringVar(value="Ready")
         self.admin_status = tk.StringVar(value="")
@@ -127,11 +130,12 @@ class MeetingRecorderApp:
         self._build_log(main)
 
     def _build_task_list(self, parent: ttk.Frame) -> None:
-        columns = ("id", "title", "code", "start", "end", "enabled")
+        columns = ("id", "title", "platform", "code", "start", "end", "enabled")
         self.task_tree = ttk.Treeview(parent, columns=columns, show="headings", height=15)
         for key, title, width in (
             ("id", "ID", 190),
             ("title", "Title", 220),
+            ("platform", "Platform", 90),
             ("code", "Meeting Code", 120),
             ("start", "Start", 130),
             ("end", "End", 130),
@@ -154,31 +158,45 @@ class MeetingRecorderApp:
 
         task_page = ttk.Frame(notebook, padding=8)
         recorder_page = ttk.Frame(notebook, padding=8)
-        meeting_page = ttk.Frame(notebook, padding=8)
+        tencent_page = ttk.Frame(notebook, padding=8)
+        zoom_page = ttk.Frame(notebook, padding=8)
+        defaults_page = ttk.Frame(notebook, padding=8)
         notebook.add(task_page, text="Task")
         notebook.add(recorder_page, text="Recorder")
-        notebook.add(meeting_page, text="Meeting")
+        notebook.add(tencent_page, text="Tencent")
+        notebook.add(zoom_page, text="Zoom")
+        notebook.add(defaults_page, text="Defaults")
 
         self.task_fields = {
             "id": tk.StringVar(),
             "title": tk.StringVar(),
+            "meeting_platform": tk.StringVar(value=DEFAULT_MEETING_PLATFORM),
             "meeting_code": tk.StringVar(),
+            "meeting_password": tk.StringVar(),
             "meeting_url": tk.StringVar(),
             "start_time": tk.StringVar(),
             "end_time": tk.StringVar(),
         }
         self._entry(task_page, "ID", self.task_fields["id"], 0)
         self._entry(task_page, "Title", self.task_fields["title"], 1)
-        self._entry(task_page, "Meeting Code", self.task_fields["meeting_code"], 2)
-        self._entry(task_page, "Meeting URL", self.task_fields["meeting_url"], 3)
+        ttk.Label(task_page, text="Platform").grid(row=2, column=0, sticky=tk.W, pady=4)
+        ttk.Combobox(
+            task_page,
+            textvariable=self.task_fields["meeting_platform"],
+            values=list(SUPPORTED_MEETING_PLATFORMS),
+            state="readonly",
+        ).grid(row=2, column=1, sticky=tk.EW, padx=(8, 0), pady=4)
+        self._entry(task_page, "Meeting Code", self.task_fields["meeting_code"], 3)
+        self._entry(task_page, "Meeting Password", self.task_fields["meeting_password"], 4)
+        self._entry(task_page, "Meeting URL", self.task_fields["meeting_url"], 5)
         ttk.Button(task_page, text="Sync URL From Code", command=self.sync_url_from_code).grid(
-            row=4, column=1, sticky=tk.W, pady=4
+            row=6, column=1, sticky=tk.W, pady=4
         )
-        self._datetime_entry(task_page, "Start Time", self.task_fields["start_time"], "start_time", 5)
-        self._datetime_entry(task_page, "End Time", self.task_fields["end_time"], "end_time", 6)
-        self._build_common_slots(task_page, 7)
+        self._datetime_entry(task_page, "Start Time", self.task_fields["start_time"], "start_time", 7)
+        self._datetime_entry(task_page, "End Time", self.task_fields["end_time"], "end_time", 8)
+        self._build_common_slots(task_page, 9)
         ttk.Checkbutton(task_page, text="Enabled", variable=self.enabled).grid(
-            row=8, column=1, sticky=tk.W, pady=4
+            row=10, column=1, sticky=tk.W, pady=4
         )
         task_page.columnconfigure(1, weight=1)
 
@@ -205,34 +223,53 @@ class MeetingRecorderApp:
         self._entry(recorder_page, "Stop Command", self.recorder_fields["stop_command"], 7)
         recorder_page.columnconfigure(1, weight=1)
 
-        self.meeting_fields = {
+        self.tencent_fields = {
             "leave_command": tk.StringVar(),
             "close_command": tk.StringVar(),
             "process_names": tk.StringVar(),
             "window_title_keywords": tk.StringVar(),
             "open_delay_seconds": tk.StringVar(),
+        }
+        self.zoom_fields = {
+            "leave_command": tk.StringVar(),
+            "close_command": tk.StringVar(),
+            "process_names": tk.StringVar(),
+            "window_title_keywords": tk.StringVar(),
+            "open_delay_seconds": tk.StringVar(),
+        }
+        self.defaults_fields = {
             "join_early_minutes": tk.StringVar(),
             "recording_tail_minutes": tk.StringVar(),
             "max_late_start_minutes": tk.StringVar(),
         }
-        self._entry(meeting_page, "Leave Command", self.meeting_fields["leave_command"], 0)
-        self._entry(meeting_page, "Close Command", self.meeting_fields["close_command"], 1)
-        self._entry(meeting_page, "Process Names", self.meeting_fields["process_names"], 2)
-        self._entry(meeting_page, "Title Keywords", self.meeting_fields["window_title_keywords"], 3)
-        self._entry(meeting_page, "Open Delay Sec", self.meeting_fields["open_delay_seconds"], 4)
-        ttk.Checkbutton(
-            meeting_page,
-            text="Focus after join",
-            variable=self.focus_after_join,
-        ).grid(row=5, column=1, sticky=tk.W, pady=4)
-        self._entry(meeting_page, "Join Early Min", self.meeting_fields["join_early_minutes"], 6)
-        self._entry(meeting_page, "Tail Min", self.meeting_fields["recording_tail_minutes"], 7)
-        self._entry(meeting_page, "Max Late Start Min", self.meeting_fields["max_late_start_minutes"], 8)
-        meeting_page.columnconfigure(1, weight=1)
+        self._build_meeting_client_editor(tencent_page, self.tencent_fields, self.focus_after_join)
+        self._build_meeting_client_editor(zoom_page, self.zoom_fields, self.zoom_focus_after_join)
+        self._entry(defaults_page, "Join Early Min", self.defaults_fields["join_early_minutes"], 0)
+        self._entry(defaults_page, "Tail Min", self.defaults_fields["recording_tail_minutes"], 1)
+        self._entry(defaults_page, "Max Late Start Min", self.defaults_fields["max_late_start_minutes"], 2)
+        defaults_page.columnconfigure(1, weight=1)
 
     def _entry(self, parent: ttk.Frame, label: str, var: tk.StringVar, row: int) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky=tk.W, pady=4)
         ttk.Entry(parent, textvariable=var).grid(row=row, column=1, sticky=tk.EW, padx=(8, 0), pady=4)
+
+    def _build_meeting_client_editor(
+        self,
+        parent: ttk.Frame,
+        fields: dict[str, tk.StringVar],
+        focus_var: tk.BooleanVar,
+    ) -> None:
+        self._entry(parent, "Leave Command", fields["leave_command"], 0)
+        self._entry(parent, "Close Command", fields["close_command"], 1)
+        self._entry(parent, "Process Names", fields["process_names"], 2)
+        self._entry(parent, "Title Keywords", fields["window_title_keywords"], 3)
+        self._entry(parent, "Open Delay Sec", fields["open_delay_seconds"], 4)
+        ttk.Checkbutton(
+            parent,
+            text="Focus after join",
+            variable=focus_var,
+        ).grid(row=5, column=1, sticky=tk.W, pady=4)
+        parent.columnconfigure(1, weight=1)
 
     def _datetime_entry(
         self,
@@ -296,7 +333,9 @@ class MeetingRecorderApp:
         )
 
     def _bind_field_events(self) -> None:
-        self.task_fields["meeting_code"].trace_add("write", self._on_meeting_code_changed)
+        self.task_fields["meeting_code"].trace_add("write", self._on_meeting_details_changed)
+        self.task_fields["meeting_platform"].trace_add("write", self._on_meeting_details_changed)
+        self.task_fields["meeting_password"].trace_add("write", self._on_meeting_details_changed)
 
     def _build_controls(self, parent: ttk.Frame) -> None:
         controls = ttk.Frame(parent)
@@ -383,6 +422,7 @@ class MeetingRecorderApp:
         recorder = self.raw_config.get("recorder", {})
         defaults = self.raw_config.get("defaults", {})
         tencent = self.raw_config.get("tencent_meeting", {})
+        zoom = self.raw_config.get("zoom_meeting", {})
 
         self.recorder_fields["path"].set(str(recorder.get("path", "")))
         self.recorder_fields["start_delay_seconds"].set(str(recorder.get("start_delay_seconds", 8)))
@@ -393,17 +433,25 @@ class MeetingRecorderApp:
         self.recorder_fields["start_command"].set(str(recorder.get("start_command") or ""))
         self.recorder_fields["stop_command"].set(str(recorder.get("stop_command") or ""))
 
-        self.meeting_fields["leave_command"].set(str(tencent.get("leave_command") or ""))
-        self.meeting_fields["close_command"].set(str(tencent.get("close_command") or ""))
-        self.meeting_fields["process_names"].set(", ".join(tencent.get("process_names", [])))
-        self.meeting_fields["window_title_keywords"].set(
+        self.tencent_fields["leave_command"].set(str(tencent.get("leave_command") or ""))
+        self.tencent_fields["close_command"].set(str(tencent.get("close_command") or ""))
+        self.tencent_fields["process_names"].set(", ".join(tencent.get("process_names", [])))
+        self.tencent_fields["window_title_keywords"].set(
             ", ".join(tencent.get("window_title_keywords", []))
         )
-        self.meeting_fields["open_delay_seconds"].set(str(tencent.get("open_delay_seconds", 8)))
+        self.tencent_fields["open_delay_seconds"].set(str(tencent.get("open_delay_seconds", 8)))
         self.focus_after_join.set(bool(tencent.get("focus_after_join", True)))
-        self.meeting_fields["join_early_minutes"].set(str(defaults.get("join_early_minutes", 2)))
-        self.meeting_fields["recording_tail_minutes"].set(str(defaults.get("recording_tail_minutes", 1)))
-        self.meeting_fields["max_late_start_minutes"].set(str(defaults.get("max_late_start_minutes", 10)))
+
+        self.zoom_fields["leave_command"].set(str(zoom.get("leave_command") or ""))
+        self.zoom_fields["close_command"].set(str(zoom.get("close_command") or ""))
+        self.zoom_fields["process_names"].set(", ".join(zoom.get("process_names", [])))
+        self.zoom_fields["window_title_keywords"].set(", ".join(zoom.get("window_title_keywords", [])))
+        self.zoom_fields["open_delay_seconds"].set(str(zoom.get("open_delay_seconds", 8)))
+        self.zoom_focus_after_join.set(bool(zoom.get("focus_after_join", True)))
+
+        self.defaults_fields["join_early_minutes"].set(str(defaults.get("join_early_minutes", 2)))
+        self.defaults_fields["recording_tail_minutes"].set(str(defaults.get("recording_tail_minutes", 1)))
+        self.defaults_fields["max_late_start_minutes"].set(str(defaults.get("max_late_start_minutes", 10)))
 
     def _collect_config(self) -> dict[str, Any]:
         process_names = [
@@ -427,26 +475,38 @@ class MeetingRecorderApp:
                 "stop_command": self._none_if_blank(self.recorder_fields["stop_command"].get()),
             },
             "tencent_meeting": {
-                "leave_command": self._none_if_blank(self.meeting_fields["leave_command"].get()),
-                "close_command": self._none_if_blank(self.meeting_fields["close_command"].get()),
-                "process_names": self._comma_list(self.meeting_fields["process_names"].get()),
+                "leave_command": self._none_if_blank(self.tencent_fields["leave_command"].get()),
+                "close_command": self._none_if_blank(self.tencent_fields["close_command"].get()),
+                "process_names": self._comma_list(self.tencent_fields["process_names"].get()),
                 "window_title_keywords": self._comma_list(
-                    self.meeting_fields["window_title_keywords"].get()
+                    self.tencent_fields["window_title_keywords"].get()
                 ),
                 "open_delay_seconds": self._int_field(
-                    self.meeting_fields["open_delay_seconds"], "open_delay_seconds"
+                    self.tencent_fields["open_delay_seconds"], "open_delay_seconds"
                 ),
                 "focus_after_join": self.focus_after_join.get(),
             },
+            "zoom_meeting": {
+                "leave_command": self._none_if_blank(self.zoom_fields["leave_command"].get()),
+                "close_command": self._none_if_blank(self.zoom_fields["close_command"].get()),
+                "process_names": self._comma_list(self.zoom_fields["process_names"].get()),
+                "window_title_keywords": self._comma_list(
+                    self.zoom_fields["window_title_keywords"].get()
+                ),
+                "open_delay_seconds": self._int_field(
+                    self.zoom_fields["open_delay_seconds"], "zoom_open_delay_seconds"
+                ),
+                "focus_after_join": self.zoom_focus_after_join.get(),
+            },
             "defaults": {
                 "join_early_minutes": self._int_field(
-                    self.meeting_fields["join_early_minutes"], "join_early_minutes"
+                    self.defaults_fields["join_early_minutes"], "join_early_minutes"
                 ),
                 "recording_tail_minutes": self._int_field(
-                    self.meeting_fields["recording_tail_minutes"], "recording_tail_minutes"
+                    self.defaults_fields["recording_tail_minutes"], "recording_tail_minutes"
                 ),
                 "max_late_start_minutes": self._int_field(
-                    self.meeting_fields["max_late_start_minutes"], "max_late_start_minutes"
+                    self.defaults_fields["max_late_start_minutes"], "max_late_start_minutes"
                 ),
             },
             "tasks": self.tasks,
@@ -463,6 +523,7 @@ class MeetingRecorderApp:
                 values=(
                     task.get("id", ""),
                     task.get("title", ""),
+                    task.get("meeting_platform", DEFAULT_MEETING_PLATFORM),
                     task.get("meeting_code", ""),
                     task.get("start_time", ""),
                     task.get("end_time", ""),
@@ -490,7 +551,14 @@ class MeetingRecorderApp:
 
     def _show_task(self, index: int) -> None:
         task = self.tasks[index]
+        inferred_platform = normalize_meeting_platform(
+            str(task.get("meeting_platform") or ""),
+            str(task.get("meeting_url") or ""),
+        )
         for key, var in self.task_fields.items():
+            if key == "meeting_platform":
+                var.set(inferred_platform)
+                continue
             var.set(str(task.get(key) or ""))
         self.enabled.set(bool(task.get("enabled", True)))
 
@@ -499,7 +567,9 @@ class MeetingRecorderApp:
         task = {
             "id": f"meeting-{datetime.now().strftime('%Y%m%d-%H%M')}",
             "title": "New Meeting",
+            "meeting_platform": DEFAULT_MEETING_PLATFORM,
             "meeting_code": "",
+            "meeting_password": "",
             "meeting_url": "",
             "start_time": now,
             "end_time": now,
@@ -518,14 +588,29 @@ class MeetingRecorderApp:
             if index is None:
                 return
 
+        current_url = self.task_fields["meeting_url"].get()
+        url_platform = meeting_platform_from_url(current_url)
+        meeting_platform = url_platform or normalize_meeting_platform(
+            self.task_fields["meeting_platform"].get(),
+            current_url,
+        )
         meeting_code = self._none_if_blank(self.task_fields["meeting_code"].get())
-        meeting_url = self._synced_meeting_url(meeting_code, self.task_fields["meeting_url"].get())
+        meeting_password = self._none_if_blank(self.task_fields["meeting_password"].get())
+        meeting_url = self._synced_meeting_url(
+            meeting_platform,
+            meeting_code,
+            meeting_password,
+            current_url,
+        )
+        self.task_fields["meeting_platform"].set(meeting_platform)
         self.task_fields["meeting_url"].set(meeting_url or "")
 
         task = {
             "id": self.task_fields["id"].get().strip(),
             "title": self.task_fields["title"].get().strip(),
+            "meeting_platform": meeting_platform,
             "meeting_code": meeting_code,
+            "meeting_password": meeting_password,
             "meeting_url": meeting_url,
             "start_time": self.task_fields["start_time"].get().strip(),
             "end_time": self.task_fields["end_time"].get().strip(),
@@ -675,28 +760,37 @@ class MeetingRecorderApp:
         if not meeting_code:
             messagebox.showinfo("No meeting code", "Enter a meeting code first.")
             return
-        self.task_fields["meeting_code"].set(normalize_meeting_code(meeting_code))
-        self.task_fields["meeting_url"].set(
-            self._synced_meeting_url(meeting_code, self.task_fields["meeting_url"].get()) or ""
-        )
+        self._sync_meeting_fields()
         self.status.set("Meeting URL synced")
 
-    def _on_meeting_code_changed(self, *_args: str) -> None:
+    def _on_meeting_details_changed(self, *_args: str) -> None:
         if self._meeting_code_syncing:
             return
+        self._sync_meeting_fields()
 
-        raw_value = self.task_fields["meeting_code"].get()
-        normalized_code = normalize_meeting_code(raw_value)
+    def _sync_meeting_fields(self) -> None:
+        current_url = self.task_fields["meeting_url"].get()
+        normalized_platform = meeting_platform_from_url(current_url) or normalize_meeting_platform(
+            self.task_fields["meeting_platform"].get(),
+            current_url,
+        )
+        raw_code = self.task_fields["meeting_code"].get()
+        normalized_code = normalize_meeting_code(raw_code)
+        meeting_password = self._none_if_blank(self.task_fields["meeting_password"].get())
         updated_url = None
-        if normalized_code.isdigit() and len(normalized_code) == 9:
+        if normalized_code:
             updated_url = self._synced_meeting_url(
+                normalized_platform,
                 normalized_code,
-                self.task_fields["meeting_url"].get(),
+                meeting_password,
+                current_url,
             )
 
         self._meeting_code_syncing = True
         try:
-            if raw_value != normalized_code:
+            if self.task_fields["meeting_platform"].get() != normalized_platform:
+                self.task_fields["meeting_platform"].set(normalized_platform)
+            if raw_code != normalized_code:
                 self.task_fields["meeting_code"].set(normalized_code)
             if updated_url is not None:
                 self.task_fields["meeting_url"].set(updated_url or "")
@@ -923,20 +1017,41 @@ class MeetingRecorderApp:
             )
         )
 
-    def _synced_meeting_url(self, meeting_code: str | None, meeting_url: str) -> str | None:
+    def _synced_meeting_url(
+        self,
+        meeting_platform: str,
+        meeting_code: str | None,
+        meeting_password: str | None,
+        meeting_url: str,
+    ) -> str | None:
         meeting_url = meeting_url.strip()
         if not meeting_code:
             return meeting_url or None
 
-        normalized_code = normalize_meeting_code(meeting_code)
-        self.task_fields["meeting_code"].set(normalized_code)
         if not meeting_url:
-            return meeting_url_from_code(normalized_code)
+            return build_join_url(
+                meeting_platform,
+                meeting_code=meeting_code,
+                meeting_url=None,
+                meeting_password=meeting_password,
+            )
 
-        url_code = meeting_code_from_url(meeting_url)
-        if url_code is not None:
-            return meeting_url_with_code(meeting_url, normalized_code)
-        return meeting_url
+        url_platform = meeting_platform_from_url(meeting_url)
+        if url_platform is None:
+            return meeting_url
+        if url_platform != meeting_platform:
+            return build_join_url(
+                meeting_platform,
+                meeting_code=meeting_code,
+                meeting_url=None,
+                meeting_password=meeting_password,
+            )
+        return build_join_url(
+            meeting_platform,
+            meeting_code=meeting_code,
+            meeting_url=meeting_url,
+            meeting_password=meeting_password,
+        )
 
 
 def main() -> int:

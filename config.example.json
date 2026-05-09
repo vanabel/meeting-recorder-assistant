@@ -26,6 +26,20 @@
     "open_delay_seconds": 8,
     "focus_after_join": true
   },
+  "zoom_meeting": {
+    "leave_command": null,
+    "close_command": null,
+    "process_names": [
+      "Zoom.exe"
+    ],
+    "window_title_keywords": [
+      "Zoom Workplace",
+      "Zoom Meeting",
+      "Zoom"
+    ],
+    "open_delay_seconds": 8,
+    "focus_after_join": true
+  },
   "defaults": {
     "join_early_minutes": 1,
     "recording_tail_minutes": 1,
@@ -40,6 +54,17 @@
       "start_time": "2026-05-10 09:00",
       "end_time": "2026-05-10 11:00",
       "enabled": true
+    },
+    {
+      "id": "zoom-demo-20260510",
+      "title": "Zoom Demo",
+      "meeting_platform": "zoom",
+      "meeting_code": "12345678901",
+      "meeting_password": "demo-passcode",
+      "meeting_url": "https://zoom.us/j/12345678901",
+      "start_time": "2026-05-10 14:00",
+      "end_time": "2026-05-10 15:00",
+      "enabled": false
     }
   ]
 }
